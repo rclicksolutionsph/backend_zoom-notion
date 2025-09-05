@@ -43,7 +43,7 @@ async function getHostEmail(hostId) {
 
     const res = await fetch(`https://api.zoom.us/v2/users/${hostId}`, {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${NOTION_API_KEY}`,
       },
     });
 
