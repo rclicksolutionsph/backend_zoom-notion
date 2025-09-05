@@ -68,10 +68,15 @@ app.post("/webhook", async (req, res) => {
 
   if (event === "meeting.ended") {
     const meeting = req.body.payload.object;
+
+    const start = new Date(meeting.start_time);
+    const end = new Date(meeting.end_time);
+    const durationMinutes = Math.round((end - start) / 60000); // 1 min = 60000 ms
+
     const callData = {
-      caller: meeting.host_id,
+      caller: meeting.host_email,
       phone: meeting.id,
-      duration: meeting.duration,
+      duration: durationMinutes,
       type: "Zoom Meeting",
       date: new Date(meeting.start_time).toISOString(),
       recording: meeting.recording_files?.[0]?.download_url || null
