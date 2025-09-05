@@ -6,45 +6,62 @@ import crypto from "crypto";
 const app = express();
 app.use(bodyParser.json());
 
-// Notion API setup (move these to process.env in production)
+// Notion API setup (⚠️ move these to process.env in production)
 const NOTION_API_KEY = "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";
 const DATABASE_ID = "264c93dbf94180249366e082311d9406";
 const ZOOM_WEBHOOK_SECRET_TOKEN = "8PHltp2oTN2464C7mYc8EQ";
 
-// Zoom OAuth app credentials (from App Marketplace → Server-to-Server OAuth app)
-const ZOOM_ACCOUNT_ID = "your_account_id";
-const ZOOM_CLIENT_ID = "your_client_id";
-const ZOOM_CLIENT_SECRET = "your_client_secret";
+// Zoom Server-to-Server OAuth credentials
+const ZOOM_ACCOUNT_ID = "lr923HlbTTibOxsrPJuD5Q";
+const ZOOM_CLIENT_ID = "qw7mh1_UTR6SzSZuTpryQ";
+const ZOOM_CLIENT_SECRET = "NpWYxjyRXJFG58kkdQdbcW5OBI1jvX1r";
 
-// 🔑 Fetch Zoom Access Token
+// 🔑 Token cache
+let zoomToken = null;
+let zoomTokenExpiry = 0;
+
+// ✅ Get (or refresh) Zoom Access Token
 async function getZoomAccessToken() {
-  const tokenResponse = await fetch("https://zoom.us/oauth/token", {
-    method: "POST",
-    headers: {
-      "Authorization":
-        "Basic " +
-        Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64"),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "account_credentials",
-      account_id: ZOOM_ACCOUNT_ID,
-    }),
-  });
+  const now = Math.floor(Date.now() / 1000);
 
-  const data = await tokenResponse.json();
-  return data.access_token;
+  // Use cached token if still valid
+  if (zoomToken && now < zoomTokenExpiry) {
+    return zoomToken;
+  }
+
+  console.log("🔄 Fetching new Zoom access token...");
+  const basicAuth = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
+
+  const res = await fetch(
+    `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+      },
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    console.error("❌ Failed to fetch Zoom token:", data);
+    throw new Error("Zoom token fetch failed");
+  }
+
+  zoomToken = data.access_token;
+  zoomTokenExpiry = now + data.expires_in - 60; // refresh 1 min before expiry
+
+  console.log("✅ Got Zoom access token (expires in", data.expires_in, "sec)");
+  return zoomToken;
 }
 
 // 🔎 Get host email from host_id
 async function getHostEmail(hostId) {
   try {
     const token = await getZoomAccessToken();
-
     const res = await fetch(`https://api.zoom.us/v2/users/${hostId}`, {
-      headers: {
-        Authorization: `Bearer ${NOTION_API_KEY}`,
-      },
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (!res.ok) {
@@ -53,6 +70,7 @@ async function getHostEmail(hostId) {
     }
 
     const user = await res.json();
+    console.log("📧 Found host email:", user.email);
     return user.email || null;
   } catch (err) {
     console.error("🔥 Error fetching host email:", err);
@@ -68,7 +86,7 @@ async function logToNotion(callData) {
     const response = await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${NOTION_API_KEY}`,
+        Authorization: `Bearer ${NOTION_API_KEY}`,
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
       },
@@ -112,10 +130,7 @@ app.post("/webhook", async (req, res) => {
       .digest("hex");
 
     console.log("🔑 URL validation success");
-    return res.json({
-      plainToken,
-      encryptedToken,
-    });
+    return res.json({ plainToken, encryptedToken });
   }
 
   // Step 2: Handle real events
@@ -164,6 +179,9 @@ app.post("/webhook", async (req, res) => {
 
   res.status(200).send("ok");
 });
+
+// ✅ Health check endpoint
+app.get("/ping", (req, res) => res.send("pong"));
 
 // ✅ Fix PORT assignment
 const PORT = process.env.PORT || 3000;
