@@ -2,19 +2,12 @@ import express from "express";
 import bodyParser from "body-parser";
 import fetch from "node-fetch";
 import crypto from "crypto";
+import dotenv from "dotenv";
+dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// Notion API setup (⚠️ move these to process.env in production)
-const NOTION_API_KEY = "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";
-const DATABASE_ID = "264c93dbf94180249366e082311d9406";
-const ZOOM_WEBHOOK_SECRET_TOKEN = "8PHltp2oTN2464C7mYc8EQ";
-
-// Zoom Server-to-Server OAuth credentials
-const ZOOM_ACCOUNT_ID = "lr923HlbTTibOxsrPJuD5Q";
-const ZOOM_CLIENT_ID = "qw7mh1_UTR6SzSZuTpryQ";
-const ZOOM_CLIENT_SECRET = "NpWYxjyRXJFG58kkdQdbcW5OBI1jvX1r";
 
 // 🔑 Token cache
 let zoomToken = null;
@@ -30,7 +23,9 @@ async function getZoomAccessToken() {
   }
 
   console.log("🔄 Fetching new Zoom access token...");
-  const basicAuth = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
+  const basicAuth = Buffer.from(
+    `${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`
+  ).toString("base64");
 
   const res = await fetch(
     `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`,
@@ -93,7 +88,9 @@ async function logToNotion(callData) {
       body: JSON.stringify({
         parent: { database_id: DATABASE_ID },
         properties: {
-          Caller: { title: [{ text: { content: callData.caller || "Unknown" } }] },
+          Caller: {
+            title: [{ text: { content: callData.caller || "Unknown" } }],
+          },
           "Phone Number": {
             rich_text: [{ text: { content: callData.phone || "" } }],
           },
