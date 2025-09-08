@@ -3,11 +3,20 @@ import bodyParser from "body-parser";
 import fetch from "node-fetch";
 import crypto from "crypto";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
+// 🔑 Env variables
+const NOTION_API_KEY = process.env.NOTION_API_KEY;
+const DATABASE_ID = process.env.NOTION_DATABASE_ID;
+const ZOOM_WEBHOOK_SECRET_TOKEN = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
+
+const ZOOM_ACCOUNT_ID = process.env.ZOOM_ACCOUNT_ID;
+const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID;
+const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
 
 // 🔑 Token cache
 let zoomToken = null;
@@ -17,7 +26,6 @@ let zoomTokenExpiry = 0;
 async function getZoomAccessToken() {
   const now = Math.floor(Date.now() / 1000);
 
-  // Use cached token if still valid
   if (zoomToken && now < zoomTokenExpiry) {
     return zoomToken;
   }
@@ -31,21 +39,18 @@ async function getZoomAccessToken() {
     `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-      },
+      headers: { Authorization: `Basic ${basicAuth}` },
     }
   );
 
   const data = await res.json();
-
   if (!res.ok) {
     console.error("❌ Failed to fetch Zoom token:", data);
     throw new Error("Zoom token fetch failed");
   }
 
   zoomToken = data.access_token;
-  zoomTokenExpiry = now + data.expires_in - 60; // refresh 1 min before expiry
+  zoomTokenExpiry = now + data.expires_in - 60;
 
   console.log("✅ Got Zoom access token (expires in", data.expires_in, "sec)");
   return zoomToken;
@@ -65,7 +70,6 @@ async function getHostEmail(hostId) {
     }
 
     const user = await res.json();
-    console.log("📧 Found host email:", user.email);
     return user.email || null;
   } catch (err) {
     console.error("🔥 Error fetching host email:", err);
@@ -103,20 +107,73 @@ async function logToNotion(callData) {
     });
 
     const data = await response.json();
-    console.log("✅ Notion response:", data);
-
     if (!response.ok) {
       console.error("❌ Failed to write to Notion:", data);
+    } else {
+      console.log("✅ Notion response:", data.id);
     }
   } catch (err) {
     console.error("🔥 Error in logToNotion:", err);
   }
 }
 
-// 🔑 Zoom Webhook handler
-app.post("/webhook", async (req, res) => {
+// 🔑 Handle Zoom webhook events
+async function handleEvent(body) {
+  const event = body.event;
+
+  if (event === "phone.caller_ended") {
+    const call = body.payload.object;
+    const callData = {
+      caller: call.caller_number,
+      phone: call.callee_number,
+      duration: call.duration,
+      type: "Phone Call",
+      date: new Date(call.call_start_time).toISOString(),
+      recording: call.recording_url || null,
+    };
+    await logToNotion(callData);
+  }
+
+  if (event === "meeting.ended") {
+    const meeting = body.payload.object;
+
+    const start = new Date(meeting.start_time);
+    const end = new Date(meeting.end_time);
+    const durationMinutes = Math.round((end - start) / 60000);
+
+    let hostEmail = meeting.host_email;
+    if (!hostEmail && meeting.host_id) {
+      hostEmail = await getHostEmail(meeting.host_id);
+    }
+
+    const callData = {
+      caller: hostEmail || "Unknown Host",
+      phone: meeting.id,
+      duration: durationMinutes,
+      type: "Zoom Meeting",
+      date: new Date(meeting.start_time).toISOString(),
+      recording: meeting.recording_files?.[0]?.download_url || null,
+    };
+    await logToNotion(callData);
+  }
+
+  if (event === "recording.completed") {
+    const recording = body.payload.object;
+    const callData = {
+      caller: recording.host_email || "Unknown Host",
+      phone: recording.id,
+      duration: recording.duration || 0,
+      type: "Zoom Recording",
+      date: new Date(recording.start_time).toISOString(),
+      recording: recording.recording_files?.[0]?.download_url || null,
+    };
+    await logToNotion(callData);
+  }
+}
+
+// 🔑 Zoom Webhook endpoint
+app.post("/webhook", (req, res) => {
   console.log("📩 Received Zoom event:", req.body.event);
-  console.log("🔎 Payload:", JSON.stringify(req.body, null, 2));
 
   // Step 1: Handle URL validation challenge
   if (req.body.event === "endpoint.url_validation") {
@@ -130,56 +187,17 @@ app.post("/webhook", async (req, res) => {
     return res.json({ plainToken, encryptedToken });
   }
 
-  // Step 2: Handle real events
-  try {
-    const event = req.body.event;
-
-    if (event === "phone.caller_ended") {
-      const call = req.body.payload.object;
-      const callData = {
-        caller: call.caller_number,
-        phone: call.callee_number,
-        duration: call.duration,
-        type: "Phone Call",
-        date: new Date(call.start_time).toISOString(),
-        recording: call.recording_url || null,
-      };
-      await logToNotion(callData);
-    }
-
-    if (event === "meeting.ended") {
-      const meeting = req.body.payload.object;
-
-      const start = new Date(meeting.start_time);
-      const end = new Date(meeting.end_time);
-      const durationMinutes = Math.round((end - start) / 60000);
-
-      // Try to get host email from payload or fallback to API
-      let hostEmail = meeting.host_email;
-      if (!hostEmail && meeting.host_id) {
-        hostEmail = await getHostEmail(meeting.host_id);
-      }
-
-      const callData = {
-        caller: hostEmail || "Unknown Host",
-        phone: meeting.id,
-        duration: durationMinutes,
-        type: "Zoom Meeting",
-        date: new Date(meeting.start_time).toISOString(),
-        recording: meeting.recording_files?.[0]?.download_url || null,
-      };
-      await logToNotion(callData);
-    }
-  } catch (err) {
-    console.error("🔥 Error handling event:", err);
-  }
-
+  // Step 2: Respond fast & handle event async
   res.status(200).send("ok");
+
+  handleEvent(req.body).catch((err) =>
+    console.error("🔥 Error handling event:", err)
+  );
 });
 
-// ✅ Health check endpoint
+// ✅ Health check
 app.get("/ping", (req, res) => res.send("pong"));
 
-// ✅ Fix PORT assignment
+// ✅ Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Listening on port ${PORT}`));
