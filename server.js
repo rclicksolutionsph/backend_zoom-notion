@@ -18,6 +18,20 @@ const ZOOM_ACCOUNT_ID = process.env.ZOOM_ACCOUNT_ID;
 const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID;
 const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
 
+// 🚨 Validate required env vars
+[
+  "NOTION_API_KEY",
+  "DATABASE_ID",
+  "ZOOM_WEBHOOK_SECRET_TOKEN",
+  "ZOOM_ACCOUNT_ID",
+  "ZOOM_CLIENT_ID",
+  "ZOOM_CLIENT_SECRET",
+].forEach((key) => {
+  if (!process.env[key]) {
+    console.error(`❌ Missing env var: ${key}`);
+  }
+});
+
 // 🔑 Token cache
 let zoomToken = null;
 let zoomTokenExpiry = 0;
@@ -177,6 +191,11 @@ app.post("/webhook", (req, res) => {
 
   // Step 1: Handle URL validation challenge
   if (req.body.event === "endpoint.url_validation") {
+    if (!ZOOM_WEBHOOK_SECRET_TOKEN) {
+      console.error("❌ Missing ZOOM_WEBHOOK_SECRET_TOKEN");
+      return res.status(500).json({ error: "Server not configured" });
+    }
+
     const plainToken = req.body.payload.plainToken;
     const encryptedToken = crypto
       .createHmac("sha256", ZOOM_WEBHOOK_SECRET_TOKEN)
