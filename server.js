@@ -11,17 +11,25 @@ app.use(bodyParser.json());
 
 // 🔑 Env variables
 const NOTION_API_KEY = process.env.NOTION_API_KEY;
-const DATABASE_ID = process.env.NOTION_DATABASE_ID;
+const DATABASE_ID = process.env.NOTION_DATABASE_ID; // <-- correct key
 const ZOOM_WEBHOOK_SECRET_TOKEN = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
 
 const ZOOM_ACCOUNT_ID = process.env.ZOOM_ACCOUNT_ID;
 const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID;
 const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
 
-// 🚨 Validate required env vars
+// 🔤 Notion property names (tweak via env if your DB uses different names)
+const NOTION_TITLE_PROP = process.env.NOTION_TITLE_PROPERTY || "Caller";          // safer default than "Caller"
+const NOTION_PHONE_PROP = process.env.NOTION_PHONE_PROPERTY || "Phone Number";
+const NOTION_DURATION_PROP = process.env.NOTION_DURATION_PROPERTY || "Duration";
+const NOTION_TYPE_PROP = process.env.NOTION_TYPE_PROPERTY || "Type";
+const NOTION_DATE_PROP = process.env.NOTION_DATE_PROPERTY || "Date";
+const NOTION_RECORDING_PROP = process.env.NOTION_RECORDING_PROPERTY || "Recording";
+
+// 🚨 Validate required env vars (use the actual keys)
 [
   "NOTION_API_KEY",
-  "DATABASE_ID",
+  "NOTION_DATABASE_ID",
   "ZOOM_WEBHOOK_SECRET_TOKEN",
   "ZOOM_ACCOUNT_ID",
   "ZOOM_CLIENT_ID",
@@ -32,6 +40,10 @@ const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
   }
 });
 
+// Masked logs help confirm values without leaking secrets
+const mask = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "undefined");
+console.log(`🗄️ Notion DB id: ${mask(DATABASE_ID)}`);
+
 // 🔑 Token cache
 let zoomToken = null;
 let zoomTokenExpiry = 0;
@@ -40,21 +52,14 @@ let zoomTokenExpiry = 0;
 async function getZoomAccessToken() {
   const now = Math.floor(Date.now() / 1000);
 
-  if (zoomToken && now < zoomTokenExpiry) {
-    return zoomToken;
-  }
+  if (zoomToken && now < zoomTokenExpiry) return zoomToken;
 
   console.log("🔄 Fetching new Zoom access token...");
-  const basicAuth = Buffer.from(
-    `${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`
-  ).toString("base64");
+  const basicAuth = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
 
   const res = await fetch(
     `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`,
-    {
-      method: "POST",
-      headers: { Authorization: `Basic ${basicAuth}` },
-    }
+    { method: "POST", headers: { Authorization: `Basic ${basicAuth}` } }
   );
 
   const data = await res.json();
@@ -64,8 +69,7 @@ async function getZoomAccessToken() {
   }
 
   zoomToken = data.access_token;
-  zoomTokenExpiry = now + data.expires_in - 60;
-
+  zoomTokenExpiry = now + data.expires_in - 60; // refresh 1 min early
   console.log("✅ Got Zoom access token (expires in", data.expires_in, "sec)");
   return zoomToken;
 }
@@ -93,6 +97,11 @@ async function getHostEmail(hostId) {
 
 // 📝 Write data to Notion
 async function logToNotion(callData) {
+  if (!DATABASE_ID) {
+    console.error("❌ NOTION_DATABASE_ID is missing — cannot write to Notion.");
+    return;
+  }
+
   console.log("📝 Logging to Notion:", callData);
 
   try {
@@ -106,16 +115,16 @@ async function logToNotion(callData) {
       body: JSON.stringify({
         parent: { database_id: DATABASE_ID },
         properties: {
-          Caller: {
+          [NOTION_TITLE_PROP]: {
             title: [{ text: { content: callData.caller || "Unknown" } }],
           },
-          "Phone Number": {
+          [NOTION_PHONE_PROP]: {
             rich_text: [{ text: { content: callData.phone || "" } }],
           },
-          Duration: { number: callData.duration || 0 },
-          Type: { select: { name: callData.type } },
-          Date: { date: { start: callData.date } },
-          ...(callData.recording && { Recording: { url: callData.recording } }),
+          [NOTION_DURATION_PROP]: { number: callData.duration || 0 },
+          [NOTION_TYPE_PROP]: { select: { name: callData.type } },
+          [NOTION_DATE_PROP]: { date: { start: callData.date } },
+          ...(callData.recording && { [NOTION_RECORDING_PROP]: { url: callData.recording } }),
         },
       }),
     });
@@ -124,7 +133,7 @@ async function logToNotion(callData) {
     if (!response.ok) {
       console.error("❌ Failed to write to Notion:", data);
     } else {
-      console.log("✅ Notion response:", data.id);
+      console.log("✅ Notion page created:", data.id);
     }
   } catch (err) {
     console.error("🔥 Error in logToNotion:", err);
@@ -161,7 +170,7 @@ async function handleEvent(body) {
     }
 
     const callData = {
-      caller: hostEmail || "Unknown Host",
+      caller: hostEmail || meeting.host_id || "Unknown Host",
       phone: meeting.id,
       duration: durationMinutes,
       type: "Zoom Meeting",
@@ -208,14 +217,30 @@ app.post("/webhook", (req, res) => {
 
   // Step 2: Respond fast & handle event async
   res.status(200).send("ok");
-
-  handleEvent(req.body).catch((err) =>
-    console.error("🔥 Error handling event:", err)
-  );
+  handleEvent(req.body).catch((err) => console.error("🔥 Error handling event:", err));
 });
 
 // ✅ Health check
 app.get("/ping", (req, res) => res.send("pong"));
+
+// 🧪 Notion verify endpoint (checks DB id & integration access)
+app.get("/notion/verify", async (req, res) => {
+  try {
+    if (!NOTION_API_KEY || !DATABASE_ID) {
+      return res.status(500).json({ ok: false, error: "Missing NOTION_API_KEY or NOTION_DATABASE_ID" });
+    }
+    const r = await fetch(`https://api.notion.com/v1/databases/${DATABASE_ID}`, {
+      headers: {
+        Authorization: `Bearer ${NOTION_API_KEY}`,
+        "Notion-Version": "2022-06-28",
+      },
+    });
+    const data = await r.json();
+    return res.status(r.ok ? 200 : 500).json(data);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
 
 // ✅ Start server
 const PORT = process.env.PORT || 3000;
