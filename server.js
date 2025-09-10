@@ -21,7 +21,7 @@ const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID;
 const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
 
 // Notion property names (override via env if your DB uses different labels)
-const NOTION_TITLE_PROP      = process.env.NOTION_TITLE_PROPERTY      || "Name";
+const NOTION_TITLE_PROP      = process.env.NOTION_TITLE_PROPERTY      || "Caller";
 const NOTION_PHONE_PROP      = process.env.NOTION_PHONE_PROPERTY      || "Phone Number";
 const NOTION_DURATION_PROP   = process.env.NOTION_DURATION_PROPERTY   || "Duration";
 const NOTION_TYPE_PROP       = process.env.NOTION_TYPE_PROPERTY       || "Type";
